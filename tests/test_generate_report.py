@@ -1,16 +1,11 @@
-import csv
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from src.generate_report import (
-    EXCEPTION_FIELDS,
-    REPORT_FIELDS,
-    ReportError,
-    generate_reports,
-    write_report,
-)
+from src.generate_report import generate_reports
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,10 +24,6 @@ class GenerateReportTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
-
-    def read_rows(self, path):
-        with path.open(newline="", encoding="utf-8") as handle:
-            return list(csv.DictReader(handle))
 
     def test_generates_expected_customers_exceptions_and_totals(self):
         report, exceptions = generate_reports(self.account_path, self.transaction_path)
@@ -56,22 +47,20 @@ class GenerateReportTests(unittest.TestCase):
         unmatched = sum(int(row["amount_cents"]) for row in exceptions)
         self.assertEqual((known, unmatched, known + unmatched), (22800, 2750, 25550))
 
-    def test_generation_is_repeatable_from_missing_reports_without_source_changes(self):
+    def test_command_generates_repeatable_reports_without_changing_sources(self):
         source_before = {
             path: path.read_bytes()
             for path in (self.account_path, self.transaction_path)
         }
-        report, exceptions = generate_reports(self.account_path, self.transaction_path)
+        command = [sys.executable, str(ROOT / "src/generate_report.py")]
+        first_run = subprocess.run(command, cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(first_run.returncode, 0, first_run.stderr)
         output_dir = self.root / "reports"
-        output_dir.mkdir()
-        write_report(output_dir / "customer-account-report.csv", REPORT_FIELDS, report)
-        write_report(output_dir / "exceptions.csv", EXCEPTION_FIELDS, exceptions)
         first_outputs = {
             path.name: path.read_bytes() for path in output_dir.iterdir()
         }
-        report, exceptions = generate_reports(self.account_path, self.transaction_path)
-        write_report(output_dir / "customer-account-report.csv", REPORT_FIELDS, report)
-        write_report(output_dir / "exceptions.csv", EXCEPTION_FIELDS, exceptions)
+        second_run = subprocess.run(command, cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(second_run.returncode, 0, second_run.stderr)
         self.assertEqual(
             first_outputs, {path.name: path.read_bytes() for path in output_dir.iterdir()}
         )
@@ -90,8 +79,14 @@ class GenerateReportTests(unittest.TestCase):
             with self.subTest(fixture=fixture):
                 shutil.copy(ROOT / "data" / original_name, target)
                 shutil.copy(ROOT / "verification/fixtures" / fixture, target)
-                with self.assertRaises(ReportError):
-                    generate_reports(self.account_path, self.transaction_path)
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "src/generate_report.py")],
+                    cwd=self.root,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("failed", result.stderr.lower())
                 self.assertFalse((self.root / "reports").exists())
                 shutil.copy(ROOT / "data" / original_name, target)
 
